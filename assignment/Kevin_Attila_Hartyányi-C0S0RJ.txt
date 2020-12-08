@@ -1,0 +1,282 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+
+df = pd.read_csv("project_data_changed.csv", sep=";")
+
+df_num = df.select_dtypes(include = ['int64'])
+df_num.hist(figsize=(16, 20), bins=50, xlabelsize=8, ylabelsize=8);
+corr = df_num.corr()
+f = plt.figure(figsize=(8, 6))
+plt.title('Correlation Matrix');
+sns.heatmap(corr, 
+            xticklabels=corr.columns.values,
+            yticklabels=corr.columns.values);
+df_num_corr = df_num.corr()['Y']
+features_list = df_num_corr.sort_values(ascending=False)
+print("Correlated values with Y:\n{}".format(features_list))
+
+from sklearn import preprocessing
+
+le = preprocessing.LabelEncoder()
+
+num_cols = df_num.columns[:-1]
+df_normalized = df.copy()
+df_normalized[num_cols] = df_normalized[num_cols].apply(preprocessing.scale)
+
+df_obj_column_names = df.select_dtypes(include = ['object']).columns
+categories_with_label = list(df_obj_column_names)
+categories_with_label.append("Y")
+df_categorical = df[categories_with_label]
+df_categorical["Y"] = df_categorical["Y"].map(lambda x: "Good" if x == 1 else "Bad")
+df_categorical.head()
+
+from apyori import apriori
+rules = list(apriori(df_categorical.values, min_support = 0.7))
+results = pd.DataFrame(rules)
+
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+df_tmp = df_normalized.copy()
+df_tmp = df_tmp.drop(['Y'], axis=1)
+df_tmp.head()
+
+columnTransformer = ColumnTransformer([('encoder', OneHotEncoder(), df_obj_column_names)], remainder='passthrough')
+df_encoded = columnTransformer.fit_transform(df_tmp)
+df_encoded = pd.DataFrame(df_encoded)
+df_encoded.head()
+
+from sklearn.model_selection import train_test_split
+
+X = df_encoded
+y = df['Y']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.22, random_state=0)
+
+from sklearn.svm import SVC
+model = SVC(probability=True, random_state=0)
+model.fit(X_train,y_train)
+
+model.score(X_test, y_test)
+
+from sklearn.model_selection import cross_val_score, GridSearchCV
+
+cvr = cross_val_score(model, X, y, cv=10)
+cvr.mean(), cvr.std()
+
+from sklearn.metrics import confusion_matrix, classification_report
+
+pred = model.predict(X_test)
+
+from sklearn.metrics import accuracy_score
+def report(gt, pred):
+    print(confusion_matrix(gt, pred))
+    print(classification_report(gt, pred))
+    print("Accuracy score: ", accuracy_score(gt, pred)) 
+    
+report(y_test, pred)
+
+from sklearn.metrics import plot_precision_recall_curve
+plot_precision_recall_curve(model, X_test, y_test);
+
+from sklearn.metrics import precision_recall_curve, PrecisionRecallDisplay
+def plot_compare(new_model, original=model):
+    _, ax = plt.subplots(1,2, figsize=(15,5))    
+    plot_precision_recall_curve(original, X_test, y_test, name="Original", ax=ax[0]);
+    ax[0].set_title("Original")
+    plot_precision_recall_curve(new_model, X_test, y_test, name="New", ax=ax[1]);
+    ax[1].set_title("New")
+
+def conf_matrix(m): 
+    pred = m.predict(X_test)
+    print(confusion_matrix(y_test, pred))
+    print(classification_report(y_test, pred))
+
+param_grid = {'C': [0.001,0.01, 0.1, 0.5, 1, 10, 100], 'gamma': ['auto', 'scale']}
+
+from sklearn.metrics import recall_score, make_scorer
+custom_scorer = make_scorer(recall_score,  pos_label=2)
+n_model = SVC(probability=True, random_state=0)
+grid_search = GridSearchCV(n_model, param_grid, n_jobs=-1, verbose = 1, scoring=custom_scorer)
+grid_search.fit(X_train, y_train)
+
+best_search_model = grid_search.best_estimator_
+best_search_model.score(X_test, y_test)
+
+plot_compare(best_search_model, model)
+
+report(y_test, model.predict(X_test))
+
+report(y_test, best_search_model.predict(X_test))
+
+from sklearn.metrics import precision_recall_curve, PrecisionRecallDisplay
+def adjus_classes(y_prob, t):
+    return [1 if y >= t else 2 for y in y_prob]
+    
+y_scores = model.predict_proba(X_test)[:, 0]
+pred_adjusted = adjus_classes(y_scores, 0.8)
+report(y_test, pred_adjusted)
+
+from sklearn.decomposition import PCA
+
+pca = PCA(n_components=2, random_state=0)
+X_pca = pca.fit_transform(X)
+
+pca.fit(X_train)
+X_train_pca = pca.transform(X_train)
+X_test_pca = pca.transform(X_test)
+
+df_principal = pd.DataFrame(X_pca, columns = ['princ comp 1', 'princ comp 2'])
+df_principal = pd.concat([df_principal, y], axis = 1)
+df_principal.head()
+
+fig = plt.figure(figsize = (10,10))
+ax = fig.add_subplot(1,1,1) 
+ax.set_xlabel('Principal Component 1', fontsize = 15)
+ax.set_ylabel('Principal Component 2', fontsize = 15)
+ax.set_title('PCA', fontsize = 25)
+targets = [1, 2]
+colors = ['b', 'r']
+for target, color in zip(targets,colors):
+    indicesToKeep = df_principal['Y'] == target
+    ax.scatter(df_principal.loc[indicesToKeep, 'princ comp 1'], 
+               df_principal.loc[indicesToKeep, 'princ comp 2'], c = color)
+ax.legend(["Good Customer", "Bad Customer"])
+ax.grid()
+
+model = SVC(probability=True, random_state=0)
+grid_search = GridSearchCV(model, param_grid, n_jobs=-1, verbose = 1)
+grid_search.fit(X_train_pca, y_train)
+
+model_pca = grid_search.best_estimator_
+model_pca.score(X_test_pca, y_test)
+
+pred_original = grid_search.predict(X_test_pca)
+report(y_test, pred_original)
+
+def plot_svm_pca(model):
+    def plot_contours(ax, clf, xx, yy, **params):
+        Z = clf.decision_function(np.c_[xx.ravel(), yy.ravel()])
+        print ('initial decision function shape; ', np.shape(Z))
+        Z = Z.reshape(xx.shape)
+        print ('after reshape: ', np.shape(Z))
+        out = ax.contourf(xx, yy, Z, **params)
+        return out
+
+    def make_meshgrid(x, y, h=.1):
+        x_min, x_max = x.min() - 1, x.max() + 1
+        y_min, y_max = y.min() - 1, y.max() + 1
+        xx, yy = np.meshgrid(np.arange(x_min, x_max, h),
+                             np.arange(y_min, y_max, h))
+        return xx, yy
+
+    X0, X1 = X_pca[:, 0], X_pca[:, 1]
+    xx, yy = make_meshgrid(X0, X1)
+
+    fig, ax = plt.subplots(figsize=(12,9))
+    fig.patch.set_facecolor('white')
+    colors={1:'b', 2:'r'}
+
+    Y_tar_list = y.tolist()
+    yl= [int(target1) for target1 in Y_tar_list]
+    labels=yl
+
+    labl={1:'Good Customer',2:'Bad Customer'}
+    marker={1:'*',2:'d'}
+    alpha={1:.8, 2:0.5}
+
+    for l in np.unique(labels):
+        ix = np.where(labels==l)
+        ax.scatter(X0[ix],X1[ix], c=colors[l], label=labl[l], s=50,marker=marker[l], alpha=alpha[l])
+
+    plot_contours(ax, model, xx, yy, cmap='seismic', alpha=0.4)
+    plt.legend(fontsize=15)
+
+    plt.xlabel("Principal Component 1",fontsize=15)
+    plt.ylabel("Principal Component 2",fontsize=15)
+    
+plot_svm_pca(model_pca)
+
+custom_scorer = make_scorer(recall_score, greater_is_better=True,  pos_label=2, average = 'binary')
+model = SVC(probability=True, random_state=0)
+grid_search = GridSearchCV(model, param_grid, n_jobs=-1, verbose = 1, scoring=custom_scorer)
+grid_search.fit(X_train_pca, y_train)
+model_pca_recall = grid_search.best_estimator_
+pred_original = model_pca_recall.predict(X_test_pca)
+report(y_test, pred_original)
+
+plot_svm_pca(model_pca_recall)
+
+y_scores = model_pca.predict_proba(X_test_pca)[:, 0]
+pred_adjusted = adjus_classes(y_scores, 0.8)
+report(y_test, pred_adjusted)
+
+from sklearn.cluster import KMeans
+
+kmeans = KMeans(n_clusters=2, random_state=0).fit(X)
+
+clusters = pd.Series([1 if l == 0 else 2 for l in kmeans.labels_]) # because we have labels 1 and 2
+report(y, clusters)
+
+clusters = pd.Series([2 if l == 0 else 1 for l in kmeans.labels_]) # because we have labels 1 and 2
+report(y, clusters)
+
+def elbow_calc(dist, data):
+    distortions = []
+    for i in range(1, dist):
+        kmeans = KMeans(n_clusters = i, init = 'random', n_init = 10, max_iter = 300, random_state = 0)
+        kmeans.fit(data)
+        distortions.append(kmeans.inertia_)
+
+    # plot
+    plt.plot(range(1, dist), distortions, marker='o', linestyle='dashed', markerfacecolor='red')
+    plt.xlabel('Number of clusters')
+    plt.ylabel('Distortion')
+elbow_calc(50, X)
+
+kmeans = KMeans(n_clusters=2, random_state=0).fit(X_pca)
+
+clusters = pd.Series([2 if l == 0 else 1 for l in kmeans.labels_]) # because we have labels 1 and 2
+report(y, clusters)
+
+clusters = pd.Series([1 if l == 0 else 2 for l in kmeans.labels_]) # because we have labels 1 and 2
+report(y, clusters)
+
+def plot_kmeans(kmeans):
+    h = .01 
+
+    # Plot the decision boundary. For that, we will assign a color to each
+    x_min, x_max = X_pca[:, 0].min() - 1, X_pca[:, 0].max() + 1
+    y_min, y_max = X_pca[:, 1].min() - 1, X_pca[:, 1].max() + 1
+    xx, yy = np.meshgrid(np.arange(x_min, x_max, h), np.arange(y_min, y_max, h))
+
+    # Obtain labels for each point in mesh. Use last trained model.
+    Z = kmeans.predict(np.c_[xx.ravel(), yy.ravel()])
+
+    # Put the result into a color plot
+    Z = Z.reshape(xx.shape)
+    plt.figure(1)
+    plt.clf()
+    plt.imshow(Z, interpolation='nearest',
+               extent=(xx.min(), xx.max(), yy.min(), yy.max()),
+               cmap=plt.cm.Paired,
+               aspect='auto', origin='lower')
+
+    plt.plot(X_pca[:, 0], X_pca[:, 1], 'k.', markersize=2)
+    # Plot the centroids as a white X
+    centroids = kmeans.cluster_centers_
+    plt.scatter(centroids[:, 0], centroids[:, 1],
+                marker='x', s=169, linewidths=3,
+                color='w', zorder=10)
+    plt.title('K-means clustering')
+    plt.xlim(x_min, x_max)
+    plt.ylim(y_min, y_max)
+    plt.xticks(())
+    plt.yticks(())
+plot_kmeans(kmeans)
+
+elbow_calc(25, X_pca)
+
+kmeans = KMeans(n_clusters=20, random_state=0).fit(X_pca)
+plot_kmeans(kmeans)
+
